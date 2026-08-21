@@ -11,21 +11,130 @@ const LAUNCHER_POSITION_KEY = "comfyui_prompt_viewer_launcher_position_v1";
 const OPEN_COMMAND_ID = "PromptViewer.Open";
 const SIDEBAR_ID = "prompt-viewer";
 
-// Field settings: { fields: [{key, label, enabled, node_id, node_type, widget_index, node_status, example, example_source}] }
+// Field settings: { fields: [...], filters: {...}, hideBypassedPrompts: boolean }
 let fieldSettings = loadFieldSettings();
 let folderSettings = loadFolderSettings();
 let detectedSubfolders = [""];
 
+const DEFAULT_FIELD_FILTERS = {
+  includeInactive: false,
+  includeTechnical: false,
+};
+
+const TECHNICAL_NODE_TERMS = [
+  "bookmark",
+  "imagecache",
+  "ksampler",
+  "loadimage",
+  "loader",
+  "note",
+  "previewimage",
+  "randomnoise",
+  "resolutionselector",
+  "sampler",
+  "saveimage",
+  "scheduler",
+  "stylemodelapply",
+  "tasmartllm",
+  "visionencode",
+];
+
+const TECHNICAL_TITLE_WORDS = new Set([
+  "checkpoint",
+  "device",
+  "filename",
+  "height",
+  "model",
+  "precision",
+  "prefix",
+  "resolution",
+  "sampler",
+  "scheduler",
+  "seed",
+  "width",
+]);
+
+const PROMPT_IDENTITY_TERMS = [
+  "caption",
+  "description",
+  "instruction",
+  "llm",
+  "prompt",
+  "string",
+  "text",
+];
+
+function normalizeFieldSettings(value) {
+  if (!value || !Array.isArray(value.fields)) return null;
+  return {
+    ...value,
+    hideBypassedPrompts: value.hideBypassedPrompts === true,
+    filters: {
+      includeInactive: value.filters?.includeInactive === true,
+      includeTechnical: value.filters?.includeTechnical === true,
+    },
+  };
+}
+
 function loadFieldSettings() {
   try {
     const raw = localStorage.getItem(FIELD_SETTINGS_KEY);
-    if (raw) return JSON.parse(raw);
+    if (raw) return normalizeFieldSettings(JSON.parse(raw));
   } catch (e) {}
   return null;
 }
 
+function ensureFieldSettings() {
+  if (!fieldSettings) {
+    fieldSettings = {
+      fields: [],
+      filters: { ...DEFAULT_FIELD_FILTERS },
+      hideBypassedPrompts: false,
+    };
+  } else if (!fieldSettings.filters) {
+    fieldSettings.filters = { ...DEFAULT_FIELD_FILTERS };
+  }
+  return fieldSettings;
+}
+
 function saveFieldSettings() {
   localStorage.setItem(FIELD_SETTINGS_KEY, JSON.stringify(fieldSettings));
+}
+
+function isInactiveField(field) {
+  return field.node_status === "bypassed" || field.node_status === "muted";
+}
+
+function isLikelyPromptField(field) {
+  if (typeof field.likely_prompt === "boolean") return field.likely_prompt;
+
+  const normalizedType = String(field.node_type || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
+  const normalizedTitle = String(field.node_title || field.label || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ");
+  const titleWords = normalizedTitle.split(/\s+/).filter(Boolean);
+
+  if (TECHNICAL_NODE_TERMS.some((term) => normalizedType.includes(term))) return false;
+  if (titleWords.some((word) => TECHNICAL_TITLE_WORDS.has(word))) return false;
+
+  const identity = `${normalizedType} ${normalizedTitle.replaceAll(" ", "")}`;
+  if (PROMPT_IDENTITY_TERMS.some((term) => identity.includes(term))) return true;
+
+  const example = String(field.example || "").trim();
+  const words = example.match(/\b[\w'-]+\b/g) || [];
+  return example.length >= 30 && words.length >= 5;
+}
+
+function visibleFieldEntries() {
+  const settings = ensureFieldSettings();
+  return settings.fields
+    .map((field, index) => ({ field, index }))
+    .filter(({ field }) => (
+      (settings.filters.includeInactive || !isInactiveField(field))
+      && (settings.filters.includeTechnical || isLikelyPromptField(field))
+    ));
 }
 
 function loadFolderSettings() {
@@ -58,6 +167,10 @@ function getFieldOrder() {
 
 function clearPromptCache() {
   Object.keys(promptCache).forEach((k) => delete promptCache[k]);
+}
+
+function shouldHideBypassedPrompts() {
+  return ensureFieldSettings().hideBypassedPrompts === true;
 }
 
 app.registerExtension({
@@ -210,12 +323,14 @@ async function fetchPrompts(filename, subfolder) {
   const mode = debugMode ? "debug" : (activeKeys ? "custom" : "clean");
   const fieldsParam = activeKeys ? activeKeys.join(",") : "";
   const orderParam = order ? order.join(",") : "";
-  const key = `${mode}:${fieldsParam}:${orderParam}:${subfolder}/${filename}`;
+  const hideBypassed = shouldHideBypassedPrompts();
+  const key = `${mode}:${hideBypassed}:${fieldsParam}:${orderParam}:${subfolder}/${filename}`;
   if (promptCache[key]) return promptCache[key];
   try {
     let url = `/history_tools/prompt_viewer/prompts?filename=${encodeURIComponent(filename)}&subfolder=${encodeURIComponent(subfolder)}&mode=${mode}`;
     if (fieldsParam) url += `&fields=${encodeURIComponent(fieldsParam)}`;
     if (orderParam) url += `&order=${encodeURIComponent(orderParam)}`;
+    if (hideBypassed) url += "&hide_bypassed=true";
     const resp = await fetch(url);
     const prompts = await resp.json();
     promptCache[key] = prompts;
@@ -498,14 +613,48 @@ async function openSettingsPanel(overlay) {
           <button id="pv-settings-close">&times;</button>
         </div>
       </div>
-      <p class="pv-settings-hint">Toggle which prompt fields to show and drag to reorder. Click "Scan" to discover fields from your images.</p>
+      <p class="pv-settings-hint">Choose the prompt fields to show and drag to reorder them. Scan uses images from the selected output folder.</p>
+      <div class="pv-gallery-options">
+        <label title="Selected fields stay selected, but are omitted for images where their node was bypassed.">
+          <input id="pv-hide-bypassed" type="checkbox" /> Hide bypassed prompts in gallery
+        </label>
+      </div>
+      <div class="pv-field-filters">
+        <label><input id="pv-filter-inactive" type="checkbox" /> Include inactive</label>
+        <label><input id="pv-filter-technical" type="checkbox" /> Include technical</label>
+        <span id="pv-field-count"></span>
+      </div>
       <div id="pv-field-list"></div>
     </div>
   `;
   overlay.appendChild(panel);
 
+  const settings = ensureFieldSettings();
+  const inactiveFilter = panel.querySelector("#pv-filter-inactive");
+  const technicalFilter = panel.querySelector("#pv-filter-technical");
+  const hideBypassed = panel.querySelector("#pv-hide-bypassed");
+  inactiveFilter.checked = settings.filters.includeInactive;
+  technicalFilter.checked = settings.filters.includeTechnical;
+  hideBypassed.checked = settings.hideBypassedPrompts;
+
   panel.querySelector("#pv-settings-close").addEventListener("click", () => panel.remove());
   panel.querySelector("#pv-settings-scan").addEventListener("click", () => scanFields(panel));
+  hideBypassed.addEventListener("change", () => {
+    settings.hideBypassedPrompts = hideBypassed.checked;
+    saveFieldSettings();
+    clearPromptCache();
+    refreshOpenViewer();
+  });
+  inactiveFilter.addEventListener("change", () => {
+    settings.filters.includeInactive = inactiveFilter.checked;
+    saveFieldSettings();
+    renderFieldList(panel);
+  });
+  technicalFilter.addEventListener("change", () => {
+    settings.filters.includeTechnical = technicalFilter.checked;
+    saveFieldSettings();
+    renderFieldList(panel);
+  });
 
   renderFieldList(panel);
 }
@@ -521,37 +670,44 @@ async function scanFields(panel) {
     );
     const discovered = await resp.json();
 
-    if (!fieldSettings) {
-      fieldSettings = { fields: [] };
-    }
+    const settings = ensureFieldSettings();
 
-    const existingFields = new Map(fieldSettings.fields.map((f) => [f.key, f]));
+    const existingFields = new Map(settings.fields.map((f) => [f.key, f]));
+    const discoveredKeys = new Set();
     for (const d of discovered) {
+      discoveredKeys.add(d.key);
       const existing = existingFields.get(d.key);
       if (existing) {
         Object.assign(existing, {
           label: d.label,
           node_id: d.node_id,
           node_type: d.node_type,
+          node_title: d.node_title,
           widget_index: d.widget_index,
           node_status: d.node_status,
+          likely_prompt: d.likely_prompt,
           example: d.example,
           example_source: d.example_source,
         });
       } else {
-        fieldSettings.fields.push({
+        settings.fields.push({
           key: d.key,
           label: d.label,
           enabled: false,
           node_id: d.node_id,
           node_type: d.node_type,
+          node_title: d.node_title,
           widget_index: d.widget_index,
           node_status: d.node_status,
+          likely_prompt: d.likely_prompt,
           example: d.example,
           example_source: d.example_source,
         });
       }
     }
+    settings.fields = settings.fields.filter(
+      (field) => field.enabled || discoveredKeys.has(field.key)
+    );
 
     saveFieldSettings();
     renderFieldList(panel);
@@ -564,14 +720,30 @@ async function scanFields(panel) {
 }
 
 function renderFieldList(panel) {
+  const settings = ensureFieldSettings();
   const list = panel.querySelector("#pv-field-list");
-  if (!fieldSettings || fieldSettings.fields.length === 0) {
+  const count = panel.querySelector("#pv-field-count");
+  if (settings.fields.length === 0) {
+    count.textContent = "";
     list.innerHTML = '<p class="pv-settings-hint">No fields discovered yet. Click "Scan" to find text fields in your images.</p>';
     return;
   }
 
-  list.innerHTML = fieldSettings.fields
-    .map((f, i) => `
+  const entries = visibleFieldEntries();
+  const visibleIndices = new Set(entries.map(({ index }) => index));
+  const hiddenSelected = settings.fields.filter(
+    (field, index) => field.enabled && !visibleIndices.has(index)
+  ).length;
+  count.textContent = `${entries.length} of ${settings.fields.length} fields`;
+  if (hiddenSelected) count.textContent += ` (${hiddenSelected} selected hidden)`;
+
+  if (entries.length === 0) {
+    list.innerHTML = '<p class="pv-settings-hint">No fields match these filters.</p>';
+    return;
+  }
+
+  list.innerHTML = entries
+    .map(({ field: f, index: i }) => `
       <div class="pv-field-row" data-index="${i}">
         <div class="pv-field-drag">
           <button class="pv-field-up" data-index="${i}" title="Move up">&uarr;</button>
@@ -585,7 +757,10 @@ function renderFieldList(panel) {
             <span class="pv-field-example">${escapeHtml(f.example || "")}</span>
           </span>
         </label>
-        <span class="pv-field-status pv-status-${escapeHtml(f.node_status || "active")}">${escapeHtml(f.node_status || "active")}</span>
+        <span class="pv-field-badges">
+          ${isInactiveField(f) ? `<span class="pv-field-status pv-status-${escapeHtml(f.node_status)}">${escapeHtml(f.node_status)}</span>` : ""}
+          ${isLikelyPromptField(f) ? "" : '<span class="pv-field-kind">technical</span>'}
+        </span>
         <span class="pv-field-key" title="${escapeHtml(f.key)}">#${escapeHtml(f.node_id || "?")}</span>
       </div>
     `)
@@ -595,7 +770,7 @@ function renderFieldList(panel) {
   list.querySelectorAll('input[type="checkbox"]').forEach((cb) => {
     cb.addEventListener("change", () => {
       const idx = parseInt(cb.dataset.index);
-      fieldSettings.fields[idx].enabled = cb.checked;
+      settings.fields[idx].enabled = cb.checked;
       saveFieldSettings();
       clearPromptCache();
       refreshOpenViewer();
@@ -606,9 +781,12 @@ function renderFieldList(panel) {
   list.querySelectorAll(".pv-field-up").forEach((btn) => {
     btn.addEventListener("click", () => {
       const idx = parseInt(btn.dataset.index);
-      if (idx === 0) return;
-      const fields = fieldSettings.fields;
-      [fields[idx - 1], fields[idx]] = [fields[idx], fields[idx - 1]];
+      const orderedVisibleIndices = visibleFieldEntries().map(({ index }) => index);
+      const position = orderedVisibleIndices.indexOf(idx);
+      if (position <= 0) return;
+      const previousIdx = orderedVisibleIndices[position - 1];
+      const fields = settings.fields;
+      [fields[previousIdx], fields[idx]] = [fields[idx], fields[previousIdx]];
       saveFieldSettings();
       clearPromptCache();
       renderFieldList(panel);
@@ -619,9 +797,12 @@ function renderFieldList(panel) {
   list.querySelectorAll(".pv-field-down").forEach((btn) => {
     btn.addEventListener("click", () => {
       const idx = parseInt(btn.dataset.index);
-      const fields = fieldSettings.fields;
-      if (idx >= fields.length - 1) return;
-      [fields[idx], fields[idx + 1]] = [fields[idx + 1], fields[idx]];
+      const orderedVisibleIndices = visibleFieldEntries().map(({ index }) => index);
+      const position = orderedVisibleIndices.indexOf(idx);
+      if (position < 0 || position >= orderedVisibleIndices.length - 1) return;
+      const nextIdx = orderedVisibleIndices[position + 1];
+      const fields = settings.fields;
+      [fields[idx], fields[nextIdx]] = [fields[nextIdx], fields[idx]];
       saveFieldSettings();
       clearPromptCache();
       renderFieldList(panel);
@@ -713,6 +894,7 @@ function handleSearch(overlay) {
       });
       if (activeKeys) params.set("fields", activeKeys.join(","));
       if (order) params.set("order", order.join(","));
+      if (shouldHideBypassedPrompts()) params.set("hide_bypassed", "true");
       const resp = await fetch(`/history_tools/prompt_viewer/search?${params}`, {
         signal: searchController.signal,
       });
@@ -1062,6 +1244,27 @@ function applyStyles(overlay) {
     .pv-settings-hint {
       font-size: 12px; color: #777; margin: 0 0 16px 0; line-height: 1.4;
     }
+    .pv-gallery-options {
+      padding: 0 8px 10px; border-bottom: 1px solid #303030;
+    }
+    .pv-gallery-options label {
+      display: flex; align-items: center; gap: 6px;
+      color: #ccc; font-size: 12px; cursor: pointer;
+    }
+    .pv-gallery-options input { margin: 0; cursor: pointer; }
+    .pv-field-filters {
+      display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px;
+      min-height: 32px; padding: 7px 8px; margin-bottom: 10px;
+      border-bottom: 1px solid #303030;
+    }
+    .pv-field-filters label {
+      display: flex; align-items: center; gap: 6px;
+      color: #bbb; font-size: 12px; cursor: pointer;
+    }
+    .pv-field-filters input { margin: 0; cursor: pointer; }
+    #pv-field-count {
+      margin-left: auto; color: #777; font-size: 11px; white-space: nowrap;
+    }
 
     .pv-field-row {
       display: flex; align-items: center; gap: 8px;
@@ -1101,9 +1304,17 @@ function applyStyles(overlay) {
       font-size: 10px; color: #555; font-family: monospace;
       white-space: nowrap; flex-shrink: 0;
     }
+    .pv-field-badges {
+      display: flex; flex-direction: column; align-items: flex-end;
+      gap: 4px; flex-shrink: 0;
+    }
     .pv-field-status, .pv-prompt-status {
       font-size: 10px; line-height: 1; text-transform: uppercase;
       color: #aaa; white-space: nowrap;
+    }
+    .pv-field-kind {
+      color: #7c8797; font-size: 9px; line-height: 1;
+      text-transform: uppercase; white-space: nowrap;
     }
     .pv-status-muted { color: #d6a85f; }
     .pv-status-bypassed { color: #d78383; }

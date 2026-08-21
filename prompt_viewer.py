@@ -56,6 +56,7 @@ def get_image_prompts(
     mode="clean",
     allowed_fields=None,
     field_order=None,
+    hide_bypassed=False,
 ):
     image_path = safe_output_path(output_dir, subfolder, filename)
     if image_path.suffix.lower() != ".png":
@@ -71,6 +72,7 @@ def get_image_prompts(
         allowed_fields=allowed_fields,
         field_order=field_order,
         active_only=mode == "clean",
+        excluded_statuses={"bypassed"} if hide_bypassed else None,
     )
 
 
@@ -82,6 +84,7 @@ def search_output_prompts(
     limit=200,
     allowed_fields=None,
     field_order=None,
+    hide_bypassed=False,
 ):
     query = query.casefold().strip()
     if not query:
@@ -98,6 +101,7 @@ def search_output_prompts(
             allowed_fields=allowed_fields,
             field_order=field_order,
             active_only=mode == "clean",
+            excluded_statuses={"bypassed"} if hide_bypassed else None,
         )
         if any(query in prompt["text"].casefold() for prompt in prompts):
             results.append({"filename": filename, "subfolder": subfolder})
@@ -118,6 +122,19 @@ def discover_prompt_fields(output_dir, subfolder="", sample_size=30):
         ):
             key = prompt["field_key"]
             if key in seen:
+                field = seen[key]
+                field["likely_prompt"] = (
+                    field["likely_prompt"] or prompt["likely_prompt"]
+                )
+                if prompt["node_active"] and field["node_status"] != "active":
+                    field.update(
+                        {
+                            "node_mode": prompt["node_mode"],
+                            "node_status": prompt["node_status"],
+                            "example": prompt["text"][:150],
+                            "example_source": filename,
+                        }
+                    )
                 continue
             _, widget_index = key.rsplit("::", 1)
             seen[key] = {
@@ -129,6 +146,7 @@ def discover_prompt_fields(output_dir, subfolder="", sample_size=30):
                 "label": prompt["label"],
                 "node_mode": prompt["node_mode"],
                 "node_status": prompt["node_status"],
+                "likely_prompt": prompt["likely_prompt"],
                 "example": prompt["text"][:150],
                 "example_source": filename,
             }
@@ -154,6 +172,10 @@ def list_output_subfolders(output_dir):
 
 def _error_response(exc):
     return web.json_response({"error": str(exc)}, status=400)
+
+
+def _query_flag(value):
+    return str(value).casefold() in {"1", "true", "yes", "on"}
 
 
 def register_routes():
@@ -187,6 +209,7 @@ def register_routes():
         mode = request.query.get("mode", "clean")
         fields = request.query.get("fields", "")
         order = request.query.get("order", "")
+        hide_bypassed = _query_flag(request.query.get("hide_bypassed", ""))
         allowed_fields = (
             set(filter(None, fields.split(","))) if mode == "custom" else None
         )
@@ -201,6 +224,7 @@ def register_routes():
                 mode,
                 allowed_fields,
                 field_order,
+                hide_bypassed,
             )
         except ValueError as exc:
             return _error_response(exc)
@@ -216,6 +240,7 @@ def register_routes():
         mode = request.query.get("mode", "clean")
         fields = request.query.get("fields", "")
         order = request.query.get("order", "")
+        hide_bypassed = _query_flag(request.query.get("hide_bypassed", ""))
         allowed_fields = (
             set(filter(None, fields.split(","))) if mode == "custom" else None
         )
@@ -230,6 +255,7 @@ def register_routes():
                 limit,
                 allowed_fields,
                 field_order,
+                hide_bypassed,
             )
         except ValueError as exc:
             return _error_response(exc)

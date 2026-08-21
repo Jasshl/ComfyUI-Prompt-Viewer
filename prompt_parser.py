@@ -23,6 +23,49 @@ SKIP_EXTENSIONS = {
 
 MIN_PROMPT_LENGTH = 30
 
+TECHNICAL_NODE_TERMS = {
+    "bookmark",
+    "imagecache",
+    "ksampler",
+    "loadimage",
+    "loader",
+    "note",
+    "previewimage",
+    "randomnoise",
+    "resolutionselector",
+    "sampler",
+    "saveimage",
+    "scheduler",
+    "stylemodelapply",
+    "tasmartllm",
+    "visionencode",
+}
+
+TECHNICAL_TITLE_WORDS = {
+    "checkpoint",
+    "device",
+    "filename",
+    "height",
+    "model",
+    "precision",
+    "prefix",
+    "resolution",
+    "sampler",
+    "scheduler",
+    "seed",
+    "width",
+}
+
+PROMPT_IDENTITY_TERMS = {
+    "caption",
+    "description",
+    "instruction",
+    "llm",
+    "prompt",
+    "string",
+    "text",
+}
+
 NODE_STATUS = {
     0: "active",
     2: "muted",
@@ -39,12 +82,33 @@ def is_file_path_or_model(value):
     return "/" in text and "." in text.rsplit("/", 1)[-1]
 
 
+def is_likely_prompt_field(node_type, node_title, value):
+    """Return whether a string widget is likely to contain prompt text."""
+    normalized_type = re.sub(r"[^a-z0-9]+", "", str(node_type).lower())
+    normalized_title = re.sub(r"[^a-z0-9]+", " ", str(node_title).lower())
+    title_words = set(normalized_title.split())
+
+    if any(term in normalized_type for term in TECHNICAL_NODE_TERMS):
+        return False
+    if title_words & TECHNICAL_TITLE_WORDS:
+        return False
+
+    identity = f"{normalized_type} {normalized_title.replace(' ', '')}"
+    if any(term in identity for term in PROMPT_IDENTITY_TERMS):
+        return True
+
+    text = value.strip()
+    words = re.findall(r"\b[\w'-]+\b", text)
+    return len(text) >= MIN_PROMPT_LENGTH and len(words) >= 5
+
+
 def extract_prompts_from_workflow(
     workflow_json,
     mode="clean",
     allowed_fields=None,
     field_order=None,
     active_only=True,
+    excluded_statuses=None,
 ):
     """Extract resolved text widgets from ComfyUI workflow metadata."""
     if mode not in {"clean", "debug", "custom", "discover"}:
@@ -69,13 +133,15 @@ def extract_prompts_from_workflow(
             continue
 
         node_mode = node.get("mode", 0)
+        node_status = NODE_STATUS.get(node_mode, f"mode {node_mode}")
         if active_only and node_mode != 0:
+            continue
+        if excluded_statuses and node_status in excluded_statuses:
             continue
 
         node_type = node.get("type", "Unknown")
         node_id = str(node.get("id", ""))
         title = node.get("title") or node_type
-        node_status = NODE_STATUS.get(node_mode, f"mode {node_mode}")
         widgets = node.get("widgets_values", [])
         if not isinstance(widgets, list):
             continue
@@ -121,6 +187,11 @@ def extract_prompts_from_workflow(
                         "node_mode": node_mode,
                         "node_status": node_status,
                         "node_active": node_mode == 0,
+                        "likely_prompt": is_likely_prompt_field(
+                            node_type,
+                            title,
+                            text,
+                        ),
                     }
                 )
 
