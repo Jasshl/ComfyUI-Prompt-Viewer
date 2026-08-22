@@ -2,6 +2,8 @@
 
 A full-screen ComfyUI output gallery for revisiting images and the text prompts embedded in their workflow metadata.
 
+<p align="center"><a href="docs/screenshots/gallery.png"><img src="docs/screenshots/gallery.png" alt="Prompt Viewer grid" width="33%"></a><a href="docs/screenshots/list.png"><img src="docs/screenshots/list.png" alt="Prompt Viewer list" width="33%"></a><a href="docs/screenshots/prompt-detail.png"><img src="docs/screenshots/prompt-detail.png" alt="Prompt detail" width="33%"></a></p>
+
 ## Features
 
 - Grid and list views
