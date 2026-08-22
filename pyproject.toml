@@ -1,6 +1,6 @@
 [project]
 name = "prompt-viewer"
-version = "1.0.0"
+version = "1.0.1"
 description = "A full-screen ComfyUI output gallery for browsing images and workflow prompt metadata."
 license = { file = "LICENSE" }
 requires-python = ">=3.9"
@@ -14,4 +14,4 @@ Repository = "https://github.com/Jasshl/ComfyUI-Prompt-Viewer"
 
 [tool.comfy]
 PublisherId = "jashi"
-DisplayName = "ComfyUI Prompt Viewer"
+DisplayName = "Prompt Viewer"
