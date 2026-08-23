@@ -17,6 +17,12 @@ A full-screen ComfyUI output gallery for revisiting images and the text prompts 
 
 ## Installation
 
+### ComfyUI Manager
+
+Open ComfyUI-Manager, search **Node Pack** for **Prompt Viewer**, select it, and click **Install**. Restart ComfyUI when installation completes.
+
+### Manual installation
+
 From your ComfyUI `custom_nodes` directory:
 
 ```bash
